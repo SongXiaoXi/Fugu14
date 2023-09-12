@@ -9,6 +9,7 @@
 import SwiftUI
 import UIKit
 import externalCStuff
+import asmAndC
 
 let installButtonStr = altStoreBuild ? "Install Untether" : "Jailbreak + Untether"
 
@@ -51,6 +52,33 @@ struct ContentView: View {
                             .background(Color.blue)
                             .cornerRadius(10)
                             .foregroundColor(Color.white)
+                        Button("Install Rootless Bootstrap", action: {
+                            showButton = false
+                            DispatchQueue(label: "Fugu14").async {
+                                if let comm = launchServer() {
+                                    doRootlessUpdate(comm: comm)
+                                }
+                            }
+                        })
+                            .padding()
+                            .background(Color.blue)
+                            .cornerRadius(10)
+                            .foregroundColor(Color.white)
+                        
+                        if is_jailbreakd_started() {
+                            Button("Start Jailbreak", action: {
+                                showButton = false
+                                DispatchQueue(label: "Fugu14").async {
+                                    start_jailbreak()
+                                }
+                            })
+                            .padding()
+                            .background(Color.blue)
+                            .cornerRadius(10)
+                            .foregroundColor(Color.white)
+                        } else {
+                            Text("Jailbreakd has not started yet.")
+                        }
                     }
                 }
                 
@@ -180,6 +208,11 @@ struct ContentView: View {
     func doUpdate(comm: ProcessCommunication) {
         print("Requesting update")
         comm.sendArg("update")
+    }
+
+    func doRootlessUpdate(comm: ProcessCommunication) {
+        print("Requesting Rootless Bootstrap Update")
+        comm.sendArg("rootlessUpdate " + Bundle.main.bundlePath)
     }
 }
 

@@ -22,6 +22,9 @@
 #include <arpa/inet.h>
 
 #include "server.h"
+#include "krw.h"
+#include "util.h"
+#include "codesign.h"
 
 extern char **environ;
 
@@ -43,6 +46,45 @@ int runCommand(FILE *f, char *argv[]) {
     int status;
     waitpid(pid, &status, 0);
     
+    return WEXITSTATUS(status);
+}
+
+#include <spawn.h>
+
+int     posix_spawnattr_set_persona_np(const posix_spawnattr_t * __restrict, uid_t, uint32_t) __API_AVAILABLE(macos(10.11), ios(9.0));
+int     posix_spawnattr_set_persona_uid_np(const posix_spawnattr_t * __restrict, uid_t) __API_AVAILABLE(macos(10.11), ios(9.0));
+int     posix_spawnattr_set_persona_gid_np(const posix_spawnattr_t * __restrict, gid_t) __API_AVAILABLE(macos(10.11), ios(9.0));
+int     posix_spawnattr_set_persona_groups_np(const posix_spawnattr_t * __restrict, int, gid_t * __restrict, uid_t) __API_AVAILABLE(macos(10.11), ios(9.0));
+
+int runCommandWithHook(FILE *f, char *argv[]) {
+    int spawn_hook_common(pid_t *restrict pid, const char *restrict path,
+					   const posix_spawn_file_actions_t *restrict file_actions,
+					   const posix_spawnattr_t *restrict attrp,
+					   char *const argv[restrict],
+					   char *const envp[restrict],
+					   void *pspawn_org);
+
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_set_persona_np(&attr, 99, 1);
+    posix_spawnattr_set_persona_uid_np(&attr, 0);
+    posix_spawnattr_set_persona_gid_np(&attr, 0);
+
+    posix_spawn_file_actions_t action;
+    posix_spawn_file_actions_init(&action);
+    posix_spawn_file_actions_adddup2(&action, fileno(f), STDIN_FILENO);
+    posix_spawn_file_actions_adddup2(&action, fileno(f), STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&action, fileno(f), STDERR_FILENO);
+    pid_t pid;
+    setenv("PATH", "/var/jb/sbin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/usr/bin:/sbin:/bin:/usr/sbin:/usr/bin", 1);
+    int result = spawn_hook_common(&pid, argv[0], &action, &attr, argv, environ, posix_spawn);
+    posix_spawn_file_actions_destroy(&action);
+    posix_spawnattr_destroy(&attr);
+    if (result != 0) {
+        fprintf(f, "child: Failed to launch! Error: %s\r\n", strerror(errno));
+    }
+    int status;
+    waitpid(pid, &status, 0);
     return WEXITSTATUS(status);
 }
 
@@ -530,6 +572,84 @@ void handleConnection(int socket) {
             } else {
                 fprintf(f, "Failed to init libkrw support! (%d)\r\n", res);
             }
+        } else if (strcmp(cmd, "exec_injected_bin") == 0 ) {
+            char *param = getParameter(cmdBuffer, 1);
+            if (param) {
+                int ctr = 2;
+                while (1) {
+                    char *param = getParameter(cmdBuffer, ctr++);
+                    if (!param) {
+                        break;
+                    }
+                    
+                    free(param);
+                }
+                
+                char **buf = malloc(ctr * sizeof(char*));
+                buf[0] = param;
+                
+                ctr = 2;
+                while (1) {
+                    char *param = getParameter(cmdBuffer, ctr);
+                    if (!param) {
+                        break;
+                    }
+                    
+                    buf[(ctr++) - 1] = param;
+                }
+                
+                buf[ctr - 1] = NULL;
+                
+                int status = runCommandWithHook(f, buf);
+                while (*buf) {
+                    free(*buf);
+                    buf++;
+                }
+                
+                fprintf(f, "exec: Child status: %d\r\n", status);
+            } else {
+                fprintf(f, "Usage: exec <program> <args>\r\n");
+            }
+        } else if (strcmp(cmd, "inject_launchd") == 0) {
+            int ret = proc_set_debugged(1);
+            fprintf(f, "proc_set_debugged(1) done: %d\n", ret);
+            int status = runCommand(f, (char *[]){"/var/jb/basebin/opainject", "1", "/var/jb/basebin/launchdhook.dylib", NULL});
+            fprintf(f, "inject_launchd status: %d\r\n", status);
+        } else if (strcmp(cmd, "start_jailbreak") == 0) {
+            int ret = proc_set_debugged(1);
+            fprintf(f, "proc_set_debugged(1) done: %d\n", ret);
+            int status = runCommand(f, (char *[]){"/var/jb/basebin/opainject", "1", "/var/jb/basebin/launchdhook.dylib", NULL});
+            fprintf(f, "inject_launchd status: %d\r\n", status);
+            status = runCommand(f, (char *[]){"/.Fugu14Untether/bin/launchctl", "bootstrap", "system", "/var/jb/Library/LaunchDaemons", NULL});
+            fprintf(f, "start LaunchDaemons: %d\r\n", status);
+            char **buf = malloc(4 * sizeof(char*));
+            buf[0] = "/var/jb/usr/bin/uicache";
+            buf[1] = "-u";
+            buf[2] = "/var/jb/Applications/Sileo.app";
+            
+            buf[3] = NULL;
+            
+            status = runCommandWithHook(f, buf);
+            fprintf(f, "exec: Child status: %d\r\n", status);
+            buf[1] = "-a";
+            buf[2] = NULL;
+            status = runCommandWithHook(f, buf);
+            free(buf);
+            
+            fprintf(f, "exec: Child status: %d\r\n", status);
+
+            extern int processBinary(const char *path);
+            int result = processBinary("/var/jb/Applications/Sileo.app/Sileo");
+            fprintf(f, "processBinary: %d\n", result);
+            result = makeFakeLib();
+            if (result == 0) {
+                result = setFakeLibBindMountActive(true);
+                fprintf(f, "setFakeLibBindMountActive: %d\n", result);
+                if (result == 0) {
+                    generate_unsandbox_token_to_fakelib();
+                }
+            }
+            fprintf(f, "makeFakeLib: %d\n", result);
         } else {
             fprintf(f, "Unknown command %s!\r\n", cmdBuffer);
         }

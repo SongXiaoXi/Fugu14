@@ -16,7 +16,7 @@ public enum UntetherState {
 }
 
 public func getUntetherState() -> UntetherState {
-    var masterPort: io_master_t = 0
+    var masterPort: mach_port_t = 0
     let kr = IOMasterPort(bootstrap_port, &masterPort)
     guard kr == KERN_SUCCESS else {
         // Safety first

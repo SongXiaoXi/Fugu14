@@ -51,8 +51,12 @@ func run(prog: String, args: [String]) -> Bool {
         puts("Failed to exec: \(String(cString: strerror(errno)))")
         exit(-1)
     }
-    
-    waitpid(child, nil, 0)
+    var status = UInt32(0)
+    waitpid(child, &status, 0)
+    if status != 0 {
+        NSLog("subprocess \(prog) failed with status: \(status)")
+        return false
+    }
     return true
 }
 
@@ -231,7 +235,20 @@ func serverMain(pe: PostExploitation) -> Never {
             doInstall(pe: pe, doUpdate: true)
             
         default:
-            Logger.print("Received unknown command \(cmd)!")
+            let rootlessPrefix = "rootlessUpdate "
+            if cmd.hasPrefix(rootlessPrefix) {
+                let bundlePath = String(cmd.dropFirst(rootlessPrefix.count))
+                do {
+                    try pe.injectTC(path: bundlePath + "/trustcache")
+                    try pe.fixPMBug()
+                    try Rootless(bundlePath: bundlePath, pe: pe).extractBootstrap()
+                    try pe.injectTC(path: "/var/jb/basebin/basebin.tc")
+                } catch let e {
+                    Logger.print("Failed update rootless bootstrap \(e)")
+                }
+            } else {
+                Logger.print("Received unknown command \(cmd)!")
+            }
         }
     }
 }
@@ -413,6 +430,10 @@ case "untether":
                         pe.unsafelyUnwrapped.injectTC(path: path)
                     }
                 }
+                let path = "/var/jb/basebin/basebin.tc"
+                if access(path, R_OK) == 0 {
+                    pe.unsafelyUnwrapped.injectTC(path: path)
+                }
             }
             
             // See if we have any autorun executables
@@ -430,7 +451,7 @@ case "untether":
             }
             
             // Deinit kernel call, not required anymore
-            pe.unsafelyUnwrapped.deinitKernelCall()
+            //pe.unsafelyUnwrapped.deinitKernelCall()
             
             // Reset boot counter file as we succeded
             try? "0".data(using: .utf8)?.write(to: URL(fileURLWithPath: "/private/var/.Fugu14RebootCounter"))
@@ -447,6 +468,7 @@ case "untether":
             
             // Also launch iDownload
             launchCServer()
+            launchXPCServer()
             dispatchMain()
         } /*catch let e {
             Logger.print("Failed to start server: \(e)")
@@ -486,3 +508,136 @@ default:
 }
 
 pe.unsafelyUnwrapped.killMe()
+
+// A bunch of pplkrw operation for xpc server
+@_cdecl("mapInRange")
+public func fugu14_mapInRange(_ vPageStart: UInt64, _ pageCount: UInt32, _ mappingStart: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>) -> UnsafeRawPointer? {
+    var addr: vm_address_t = 0
+    let kr = vm_allocate(mach_task_self_, &addr, UInt(pageCount) * 0x4000, VM_FLAGS_ANYWHERE)
+    if kr != KERN_SUCCESS {
+        return nil
+    }
+    var paddr = try! pe.unsafelyUnwrapped.mem.virt2phys(vPageStart)
+    if addr != 0 {
+        var i = UInt32(0)
+        while i < pageCount {
+            _ = try! pe.pmapMapPA(pmap: pe.unsafelyUnwrapped.thisProc.unsafelyUnwrapped.task!.vmMap!.pmap!.addr, pa: paddr + UInt64(i) * 0x4000, va: UInt64(addr) + UInt64(i) * 0x4000)
+            i += 1
+
+        }
+        mappingStart.pointee = UnsafeMutablePointer<UInt8>(bitPattern: UInt(addr))
+    }
+    return nil
+}
+
+@_cdecl("kalloc")
+public func fugu14_kalloc(_ size: UInt64) -> UInt64 {
+    return try! pe.unsafelyUnwrapped.kcall(function: pe.unsafelyUnwrapped.slide(pe.unsafelyUnwrapped.offsets.functions.kalloc), p1: size)
+}
+
+@_cdecl("kreadbuf")
+public func fugu14_kreadbuf(_ kaddr: UInt64, _ output: UnsafeMutableRawPointer?, _ size: Int) -> Int32 {
+    do {
+        let data = try pe.unsafelyUnwrapped.mem.readBytes(virt: kaddr, count: UInt64(size))
+        data.copyBytes(to: output!.assumingMemoryBound(to: UInt8.self), count: size)
+        return 0
+    } catch let e {
+        NSLog("failed to kread: \(e)")
+        return EINVAL
+    }
+}
+
+@_cdecl("kwritebuf")
+public func fugu14_kwritebuf(_ kaddr: UInt64, _ input: UnsafeMutableRawPointer?, _ size: Int) -> Int32 {
+    do {
+        let data = Data(bytesNoCopy: input!, count: size, deallocator: .none)
+        try pe.unsafelyUnwrapped.mem.writeBytes(virt: kaddr, data: data)
+        return 0
+    } catch let e {
+        NSLog("failed to kwrite: \(e)")
+        return EINVAL
+    }
+}
+
+@_cdecl("bootInfo_getSlidUInt64")
+public func fugu14_getSlidUInt64(_ name: NSString) -> UInt64 {
+    if name == "pmap_image4_trust_caches" {
+        return pe.unsafelyUnwrapped.slide(pe.unsafelyUnwrapped.offsets.loadedTCRoot)
+    } else if name == "allproc" {
+        return pe.unsafelyUnwrapped.slide(pe.unsafelyUnwrapped.offsets.allProcAddr)
+    }
+    abort()
+}
+
+@_cdecl("bootInfo_getUInt64")
+public func fugu14_getUInt64(_ name: NSString) -> UInt64 {
+    if name == "VM_MAP_PMAP" {
+        return pe.unsafelyUnwrapped.offsets.vmMapStruct.pmapOffset
+    } else if name == "kernel_el" {
+        return 8
+    } else if name == "TASK_VM_MAP" {
+        return pe.unsafelyUnwrapped.offsets.taskStruct.vmMapOffset
+    } else if name == "ITK_SPACE" {
+        return pe.unsafelyUnwrapped.offsets.taskStruct.itk_space
+    } else if name == "PORT_KOBJECT" {
+        return 0x68 // TODO: need test
+    }
+    abort()
+}
+
+@_cdecl("get_port_kobject")
+public func fugu14_get_port_kobject(_ port: mach_port_t) -> UInt64 {
+    do {
+        return try pe.unsafelyUnwrapped.getPortKobject(port)
+    } catch let e {
+        NSLog("Failed to get port\(port) address")
+        return 0
+    }
+}
+
+private var selfCreds : UInt64 = 0
+@_cdecl("fugu14_give_kernel_creds")
+public func fugu14_give_kernel_creds() {
+    do {
+        selfCreds = try pe.unsafelyUnwrapped.giveKernelCreds()
+    } catch let e {
+        NSLog("Failed to give kernel creds")
+    }
+}
+
+@_cdecl("fugu14_restore_creds")
+public func fugu14_restore_creds() {
+    do {
+        if selfCreds != 0 {
+            try pe.unsafelyUnwrapped.restoreCreds(saved: selfCreds)
+        }
+    } catch let e {
+        NSLog("Failed to give kernel creds")
+    }
+}
+
+@_cdecl("kwrite8_ppl")
+public func fugu14_kwrite8_ppl(_ kaddr: UInt64, _ val : UInt8) -> Int32 {
+    do {
+        let kaddr_phy = try pe.unsafelyUnwrapped.mem.virt2phys(kaddr)
+        var mapped_va : UInt64? = pe.unsafelyUnwrapped.paToVa_ppl(kaddr_phy & ~UInt64(0x3FFF))
+        if mapped_va == nil {
+            var addr: vm_address_t = 0
+            let kr = vm_allocate(mach_task_self_, &addr, 0x4000, VM_FLAGS_ANYWHERE)
+            if kr != KERN_SUCCESS {
+                return -1 
+            }
+            _ = try pe.pmapMapPA(pmap: pe.unsafelyUnwrapped.thisProc.unsafelyUnwrapped.task!.vmMap!.pmap!.addr, pa: kaddr_phy & ~UInt64(0x3FFF), va: UInt64(addr))
+            mapped_va = UInt64(addr)
+        }
+        mapped_va = mapped_va! | (kaddr_phy & 0x3FFF)
+        guard let mapped_ptr = UnsafeMutablePointer<UInt8>(bitPattern: UInt(mapped_va!)) else {
+            return -1
+        }
+        mapped_ptr.pointee = val
+        return 0
+    } catch let e {
+        NSLog("Failed to write 1 byte in ppl region: \(e)")
+        return -1
+    }
+}

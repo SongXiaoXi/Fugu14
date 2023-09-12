@@ -65,6 +65,12 @@ if build_jailbreakd:
 
     print("Successfully built jailbreakd")
 
+try:
+    subprocess.run(["/bin/bash", "build.sh"], check=True, cwd="BaseBin/")
+except subprocess.CalledProcessError as e:
+    print(f"Failed to build jailbreakd! Exit status: {e.returncode}")
+    exit(-1)
+
 print("Getting CDHash of jailbreakd...")
 try:
     out = subprocess.run(["/usr/bin/codesign", "-dvvv", "arm/iOS/Fugu14App/Fugu14App/jailbreakd"], capture_output=True, check=True)

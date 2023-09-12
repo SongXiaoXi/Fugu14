@@ -18,7 +18,8 @@ let package = Package(
     dependencies: [
         // Dependencies declare other packages that this package depends on.
         .package(path: "../../Shared/KernelExploit"),
-        .package(path: "../../Shared/ClosurePwn")
+        .package(path: "../../Shared/ClosurePwn"),
+        .package(url: "https://github.com/facebook/zstd.git", .branch("dev"))
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -27,6 +28,10 @@ let package = Package(
         .target(name: "asmAndC"),
         .target(
             name: "jailbreakd",
-            dependencies: ["KernelExploit", "externalCStuff", "asmAndC", "ClosurePwn"])
+            dependencies: ["KernelExploit", "externalCStuff", "asmAndC", "ClosurePwn", .product(name: "libzstd", package: "zstd")],
+            linkerSettings: [
+                .linkedLibrary("bsm")
+            ]
+        )
     ]
 )

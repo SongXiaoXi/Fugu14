@@ -1,0 +1,16 @@
+{
+  "object": {
+    "pins": [
+      {
+        "package": "zstd",
+        "repositoryURL": "https://github.com/facebook/zstd.git",
+        "state": {
+          "branch": "dev",
+          "revision": "7806d803383b75b00868a5367154a18caf535a92",
+          "version": null
+        }
+      }
+    ]
+  },
+  "version": 1
+}

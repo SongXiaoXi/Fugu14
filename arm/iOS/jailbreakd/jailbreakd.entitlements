@@ -4,6 +4,8 @@
 <dict>
 	<key>com.apple.security.get-task-allow</key>
 	<true/>
+	<key>get-task-allow</key>
+	<true/>
 	<key>platform-application</key>
 	<true/>
 	<key>task_for_pid-allow</key>
@@ -26,6 +28,8 @@
 	<array>
 		<string>IOUserServer</string>
 		<string>RootDomainUserClient</string>
+		<string>AppleMobileFileIntegrityUserClient</string>
+		<string>IOSurfaceRootUserClient</string>
 	</array>
 	<key>com.apple.private.apfs.revert-to-snapshot</key>
 	<true/>
@@ -82,6 +86,10 @@
 	<key>com.apple.developer.driverkit.builtin</key>
 	<true/>
 	<key>com.apple.private.kernel.get-kext-info</key>
+	<true/>
+	<key>com.apple.private.amfi.can-check-trust-cache</key>
+	<true/>
+	<key>com.apple.private.bindfs-allow</key>
 	<true/>
 </dict>
 </plist>
